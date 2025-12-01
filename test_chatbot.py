@@ -1,24 +1,39 @@
 import pytest
 import sys
 import os
+import tempfile
 
 # Add src directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from src.main import app, db
+try:
+    from src.main import app, db
+except ImportError:
+    # Fallback for different import paths
+    import main
+    app = main.app
+    db = main.db
 
 @pytest.fixture
 def client():
     """Create a test client for the Flask application."""
+    # Create a temporary file for the test database
+    db_fd, app.config['DATABASE'] = tempfile.mkstemp()
     app.config['TESTING'] = True
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
     app.config['SECRET_KEY'] = 'test-secret-key'
+    app.config['UPLOAD_FOLDER'] = tempfile.mkdtemp()
     
     with app.test_client() as client:
         with app.app_context():
-            db.create_all()
-            yield client
-            db.drop_all()
+            try:
+                db.create_all()
+                yield client
+            finally:
+                db.drop_all()
+                os.close(db_fd)
+                if os.path.exists(app.config['DATABASE']):
+                    os.unlink(app.config['DATABASE'])
 
 @pytest.fixture
 def app_context():
@@ -72,6 +87,12 @@ def test_file_upload_no_file(client):
     data = response.get_json()
     assert data['success'] == False
     assert 'No file selected' in data['error']
+
+def test_basic_functionality(client):
+    """Test basic chatbot functionality without database dependencies."""
+    # Test that we can make a simple request
+    response = client.get('/')
+    assert response.status_code == 200
 
 def test_admin_conversations(client):
     """Test admin conversations endpoint."""
