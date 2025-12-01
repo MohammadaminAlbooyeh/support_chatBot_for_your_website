@@ -1,0 +1,197 @@
+name: Support Chatbot CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, '3.10', '3.11']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-flask pytest-cov flake8 black
+
+    - name: Lint with flake8
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings. GitHub editor is 127 chars wide
+        flake8 src/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Check code formatting with black
+      run: |
+        black --check src/
+
+    - name: Run tests with pytest
+      run: |
+        export FLASK_ENV=testing
+        pytest src/ -v --cov=src --cov-report=xml --cov-report=html
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install security tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install safety bandit
+
+    - name: Check for security vulnerabilities in dependencies
+      run: |
+        pip install -r requirements.txt
+        safety check
+
+    - name: Run bandit security linter
+      run: |
+        bandit -r src/ -f json -o bandit-report.json || true
+        bandit -r src/
+
+  build:
+    needs: [test, security-scan]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Create application package
+      run: |
+        mkdir -p dist
+        cp -r src/ dist/
+        cp requirements.txt dist/
+        cp README.md dist/
+
+    - name: Create Docker image (if Dockerfile exists)
+      run: |
+        if [ -f Dockerfile ]; then
+          docker build -t support-chatbot:latest .
+          docker tag support-chatbot:latest support-chatbot:${{ github.sha }}
+        fi
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: chatbot-build-${{ github.sha }}
+        path: dist/
+        retention-days: 30
+
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download build artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: chatbot-build-${{ github.sha }}
+        path: dist/
+
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment..."
+        # Add your staging deployment commands here
+        # Examples:
+        # - Deploy to Heroku, AWS, Azure, etc.
+        # - Update staging server via SSH
+        # - Deploy to container registry
+        
+        # Example for Heroku deployment:
+        # pip install heroku3
+        # python deploy_scripts/deploy_to_heroku.py staging
+        
+        # Example for AWS deployment:
+        # aws s3 sync dist/ s3://your-staging-bucket/
+        # aws ecs update-service --cluster staging --service chatbot --force-new-deployment
+
+  deploy-production:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download build artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: chatbot-build-${{ github.sha }}
+        path: dist/
+
+    - name: Deploy to production
+      run: |
+        echo "Deploying to production environment..."
+        # Add your production deployment commands here
+        
+        # Example deployment commands:
+        # python deploy_scripts/deploy_to_production.py
+        # kubectl apply -f k8s/
+        # docker push your-registry/support-chatbot:${{ github.sha }}
+
+  notify:
+    needs: [deploy-staging, deploy-production]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+    - name: Notify deployment status
+      run: |
+        if [ "${{ needs.deploy-production.result }}" == "success" ]; then
+          echo "✅ Production deployment successful!"
+          # Add notification logic (Slack, email, etc.)
+        else
+          echo "❌ Deployment failed!"
+          # Add failure notification logic
+        fi
