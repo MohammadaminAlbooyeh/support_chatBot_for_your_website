@@ -1,5 +1,9 @@
 from flask import Flask, render_template_string, request, jsonify, session
-from flask_sqlalchemy import SQLAlchemy
+try:
+    from flask_sqlalchemy import SQLAlchemy
+except Exception:
+    SQLAlchemy = None
+
 from werkzeug.utils import secure_filename
 from datetime import datetime
 import uuid
@@ -13,31 +17,45 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-db = SQLAlchemy(app)
+db = SQLAlchemy(app) if SQLAlchemy is not None else None
 
 # Database Models
-class Conversation(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    session_id = db.Column(db.String(100), nullable=False)
-    message = db.Column(db.Text, nullable=False)
-    response = db.Column(db.Text, nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    user_type = db.Column(db.String(20), default='user')  # 'user' or 'agent'
+if db is not None:
+    class Conversation(db.Model):
+        id = db.Column(db.Integer, primary_key=True)
+        session_id = db.Column(db.String(100), nullable=False)
+        message = db.Column(db.Text, nullable=False)
+        response = db.Column(db.Text, nullable=False)
+        timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+        user_type = db.Column(db.String(20), default='user')  # 'user' or 'agent'
 
-class SupportTicket(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    session_id = db.Column(db.String(100), nullable=False)
-    status = db.Column(db.String(20), default='open')  # 'open', 'assigned', 'closed'
-    priority = db.Column(db.String(10), default='medium')  # 'low', 'medium', 'high'
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    assigned_agent = db.Column(db.String(100))
+    class SupportTicket(db.Model):
+        id = db.Column(db.Integer, primary_key=True)
+        session_id = db.Column(db.String(100), nullable=False)
+        status = db.Column(db.String(20), default='open')  # 'open', 'assigned', 'closed'
+        priority = db.Column(db.String(10), default='medium')  # 'low', 'medium', 'high'
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+        assigned_agent = db.Column(db.String(100))
 
-class UploadedFile(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    session_id = db.Column(db.String(100), nullable=False)
-    filename = db.Column(db.String(200), nullable=False)
-    original_filename = db.Column(db.String(200), nullable=False)
-    upload_time = db.Column(db.DateTime, default=datetime.utcnow)
+    class UploadedFile(db.Model):
+        id = db.Column(db.Integer, primary_key=True)
+        session_id = db.Column(db.String(100), nullable=False)
+        filename = db.Column(db.String(200), nullable=False)
+        original_filename = db.Column(db.String(200), nullable=False)
+        upload_time = db.Column(db.DateTime, default=datetime.utcnow)
+else:
+    # Lightweight fallbacks so module can be imported without SQLAlchemy
+    class Conversation:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class SupportTicket:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class UploadedFile:
+        def __init__(self, *args, **kwargs):
+            pass
 
 # Enhanced response system with categories
 responses = {
@@ -88,7 +106,8 @@ faq_responses = {
 
 def create_tables():
     with app.app_context():
-        db.create_all()
+        if db is not None:
+            db.create_all()
         # Create upload directory
         os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
@@ -98,6 +117,8 @@ def get_session_id():
     return session['session_id']
 
 def save_conversation(message, response, session_id, user_type='user'):
+    if db is None:
+        return
     conversation = Conversation(
         session_id=session_id,
         message=message,
@@ -129,6 +150,8 @@ def get_response(message, session_id):
     return responses["default"] + "\n\nPopular topics: billing, technical support, account help, or type 'human' for live chat."
 
 def create_support_ticket(session_id, priority='medium'):
+    if db is None:
+        return None
     ticket = SupportTicket(
         session_id=session_id,
         priority=priority
@@ -416,14 +439,15 @@ def upload_file():
         try:
             file.save(filepath)
             
-            # Save file info to database
-            uploaded_file = UploadedFile(
-                session_id=session_id,
-                filename=unique_filename,
-                original_filename=filename
-            )
-            db.session.add(uploaded_file)
-            db.session.commit()
+            # Save file info to database (if available)
+            if db is not None:
+                uploaded_file = UploadedFile(
+                    session_id=session_id,
+                    filename=unique_filename,
+                    original_filename=filename
+                )
+                db.session.add(uploaded_file)
+                db.session.commit()
             
             return jsonify({
                 'success': True, 
@@ -437,6 +461,8 @@ def upload_file():
 
 @app.route('/admin/conversations')
 def admin_conversations():
+    if db is None:
+        return jsonify([])
     conversations = Conversation.query.order_by(Conversation.timestamp.desc()).limit(100).all()
     return jsonify([{
         'id': c.id,
@@ -449,6 +475,8 @@ def admin_conversations():
 
 @app.route('/admin/tickets')
 def admin_tickets():
+    if db is None:
+        return jsonify([])
     tickets = SupportTicket.query.order_by(SupportTicket.created_at.desc()).all()
     return jsonify([{
         'id': t.id,
